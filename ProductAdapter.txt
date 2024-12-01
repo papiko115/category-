@@ -1,0 +1,48 @@
+class ProductAdapter(
+    private val context: Context,
+    private val products: MutableList<Product>,
+    private val dbHelper: ProductDatabaseHelper
+) : ArrayAdapter<Product>(context, 0, products) {
+
+    override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+
+
+        val itemView = convertView ?: LayoutInflater.from(context).inflate(R.layout.list_item, parent, false)
+        val product = products[position]
+        val productNameTextView: TextView = itemView.findViewById(R.id.productNameTextView)
+        val deleteButton: Button = itemView.findViewById(R.id.deleteButton)
+        val categoryTextView: TextView = itemView.findViewById(R.id.categoryTextView) // カテゴリ表示用TextView
+
+        productNameTextView.text = product.name
+
+        // デバッグ: categoryName の値を確認
+        Log.d("ProductAdapter", "Position: $position, Product Name: ${product.name}, Category: ${product.categoryName}")
+
+
+        categoryTextView.text = product.categoryName // ここでカテゴリ名を設定
+
+        // ゴミ箱ボタンのクリックリスナーを設定
+        deleteButton.setOnClickListener {
+            dbHelper.deleteProduct(product)
+            products.removeAt(position)
+            notifyDataSetChanged()
+            Toast.makeText(context, "${product.name} を削除しました", Toast.LENGTH_SHORT).show()
+        }
+
+        // リストアイテムのタップで詳細画面に遷移
+        itemView.setOnClickListener {
+
+            val intent = Intent(context, DetailActivity::class.java).apply {
+                putExtra("productId", product.id)
+                putExtra("productName", product.name)
+                putExtra("productExpirationDate", product.expirationDate.toString())
+                putExtra("productQuantity", product.quantity) // 個数を追加
+                putExtra("productCategory", product.categoryName) // カテゴリ名を追加
+            }
+            context.startActivity(intent)
+        }
+
+
+        return itemView
+    }
+}

@@ -1,0 +1,229 @@
+class DetailActivity : AppCompatActivity() {
+    private lateinit var productNameTextView: TextView
+    private lateinit var productExpirationDateTextView: TextView
+    private lateinit var productQuantityTextView: TextView
+    private lateinit var chart: BarChart
+    private lateinit var productCategoryTextView: TextView // カテゴリ名用のTextView
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_detail)
+
+
+        // Toolbarの設定
+        val toolbar: Toolbar = findViewById(R.id.toolbar)
+        setSupportActionBar(toolbar)
+        supportActionBar?.setDisplayHomeAsUpEnabled(true) // 戻るボタンを表示
+
+
+        // インテントの中身を確認するためのログ
+        Log.d("DetailActivity", "Intent extras: ${intent.extras}")
+
+        productNameTextView = findViewById(R.id.productNameTextView)
+        productExpirationDateTextView = findViewById(R.id.productExpirationDateTextView)
+        productQuantityTextView = findViewById(R.id.productQuantityTextView)
+        productCategoryTextView = findViewById(R.id.productCategoryTextView) // カテゴリ名のTextView
+
+        // Intentから商品情報を取得
+        val productId = intent.getIntExtra("productId", -1)
+        val productName = intent.getStringExtra("productName") ?: ""
+        val productExpirationDate = intent.getStringExtra("productExpirationDate") ?: ""
+        val quantity = intent.getIntExtra("productQuantity", 1) // 数量の取得を確認
+        val productCategory = intent.getStringExtra("productCategory") ?: "未分類" // デフォルト値
+
+        // デバッグ: 受け取った値をログに出力
+        Log.d("DetailActivity", "Received data: Id=$productId, Name=$productName, Category=$productCategory")
+
+        // BarChartの初期化
+        chart = findViewById(R.id.expiryChart)
+
+        // テキストビューに設定
+        productNameTextView.text = productName
+        productExpirationDateTextView.text = productExpirationDate
+        productQuantityTextView.text = "数量: $quantity" // 数量を表示
+        productCategoryTextView.text = "カテゴリ: $productCategory" // カテゴリ名を表示
+
+        // グラフを描画
+        setupChart(productExpirationDate, quantity, productCategory)
+    }
+
+    private fun setupChart(expirationDateString: String, quantity: Int, category: String) {
+        // 消費期限をLocalDateに変換
+        val productExpirationDate = LocalDate.parse(expirationDateString)
+        val daysUntilExpiration = ChronoUnit.DAYS.between(LocalDate.now(), productExpirationDate).toFloat()
+
+        // グラフデータの準備
+        val entries = ArrayList<BarEntry>().apply {
+            add(BarEntry(0f, daysUntilExpiration)) // 消費期限までの日数をグラフに追加
+        }
+
+        // BarDataSetの作成
+        val dataSet = BarDataSet(entries, "$category の消費期限").apply {
+            color = Color.BLUE // 棒の色を設定
+        }
+
+        // BarDataの作成
+        val barData = BarData(dataSet)
+
+        // グラフの設定
+        chart.data = barData
+        chart.setFitBars(true)
+        chart.description.isEnabled = true // 説明を有効化
+        chart.description.text = "カテゴリ: $category の消費期限"
+        chart.invalidate() // グラフを更新
+    }
+
+    // 戻るボタンを押したときに動作
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        return when (item.itemId) {
+            android.R.id.home -> {
+                // 戻るボタンが押されたとき
+                onBackPressed()
+                true
+            }
+            else -> super.onOptionsItemSelected(item)
+        }
+    }
+
+}
+
+class MainActivity : AppCompatActivity() {
+    private lateinit var dbHelper: ProductDatabaseHelper
+    private lateinit var listView: ListView
+    private lateinit var productNameInput: EditText
+    private lateinit var productExpirationInput: EditText
+    private lateinit var productQuantityInput: EditText
+    private lateinit var addProductButton: Button
+    private lateinit var categorySpinner: Spinner
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        // BottomNavigationView のセットアップ
+        val bottomNavigationView = findViewById<BottomNavigationView>(R.id.bottom_navigation)
+        bottomNavigationView.setOnNavigationItemSelectedListener { item ->
+            when (item.itemId) {
+                R.id.navigation_category -> {
+                    // CategoryActivity に遷移
+                    val intent = Intent(this, CategoryActivity::class.java)
+                    startActivity(intent)
+                    true
+                }
+                R.id.navigation_image_recognition -> {
+                    // 画像認識画面に遷移
+                    true
+                }
+                R.id.navigation_register -> {
+                    // 商品登録画面に遷移
+                    true
+                }
+                else -> false
+            }
+        }
+
+        // パーミッションリクエストの実行
+        requestNotificationPermission(this)
+        // WorkManagerの制約とスケジュールの設定
+        val constraints = Constraints.Builder()
+            .setRequiresBatteryNotLow(true) // バッテリーが低くない時に実行
+            .build()
+
+        val workRequest = PeriodicWorkRequestBuilder<ExpirationCheckWorker>(1, TimeUnit.DAYS)
+            .setConstraints(constraints)
+            .build()
+
+        WorkManager.getInstance(this).enqueue(workRequest)
+
+
+        // データベースヘルパーの初期化
+        dbHelper = ProductDatabaseHelper(this)
+        // Spinner設定の部分
+        categorySpinner = findViewById(R.id.categorySpinner)
+
+
+        // リストビューの初期化
+        listView = findViewById(R.id.listView)
+
+        // 商品名、消費期限、数量の入力フィールド
+        productNameInput = findViewById(R.id.productNameInput)
+        productExpirationInput = findViewById(R.id.productExpirationInput)
+        productQuantityInput = findViewById(R.id.productQuantityInput)
+
+        // 商品登録ボタン
+        addProductButton = findViewById(R.id.addProductButton)
+
+        // ボタンがクリックされたときの処理
+        addProductButton.setOnClickListener {
+            val selectedPosition = categorySpinner.selectedItemPosition
+            val categoryHelper = CategoryDatabaseHelper(this)
+            val categories = categoryHelper.getAllCategories()
+            Log.d("CategoryDebug", "Categories: $categories")  // ログ出力
+
+            // 位置が無効でないことを確認
+            if (selectedPosition != Spinner.INVALID_POSITION) {
+                val selectedCategory = categories[selectedPosition] // カテゴリーオブジェクトを取得
+                val categoryId = selectedCategory.id // IDを取得
+                addProduct(categoryId)
+            } else {
+                Toast.makeText(this, "カテゴリーを選択してください", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+
+        // カテゴリーをSpinnerにセットアップ
+        val categoryHelper = CategoryDatabaseHelper(this)
+        val categories = categoryHelper.getAllCategories()
+        if (categories.isEmpty()) {
+            Toast.makeText(this, "カテゴリーが存在しません", Toast.LENGTH_SHORT).show()
+        } else {
+            val categoryNames = categories.map { it.name }
+            val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, categoryNames)
+            categorySpinner.adapter = adapter
+        }
+
+        val categoryNames = categories.map { it.name }
+        Log.d("CategoryDebug", "Category Names: $categoryNames")  // ここでリスト内容を確認
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, categoryNames)
+        categorySpinner.adapter = adapter
+
+        // 商品リストを表示するためにリストを更新
+        refreshProductList()
+    }
+
+    private fun addProduct(categoryId: Int) {
+        val name = productNameInput.text.toString()
+        val expirationDateStr = productExpirationInput.text.toString()
+        val quantityStr = productQuantityInput.text.toString()
+
+        // 日付のパース
+        val expirationDate = LocalDate.parse(expirationDateStr)
+        val quantity = quantityStr.toIntOrNull()
+
+        if (quantity == null || quantity <= 0) {
+            Toast.makeText(this, "数量は1以上の整数を入力してください", Toast.LENGTH_SHORT).show()
+            return // 数量が無効な場合は処理を中断
+        }
+
+        // 商品をデータベースに追加
+        dbHelper.addProduct(name, expirationDate, quantity, categoryId)
+
+        // リストを更新
+        refreshProductList()
+
+        // 入力フィールドをクリア
+        productNameInput.text.clear()
+        productExpirationInput.text.clear()
+        productQuantityInput.text.clear()
+    }
+
+    private fun refreshProductList() {
+        val products = dbHelper.getAllProducts()  // カテゴリー関係なしで商品を取得
+        setupListView(products)
+    }
+
+    private fun setupListView(products: List<Product>) {
+        val adapter = ProductAdapter(this, products.toMutableList(), dbHelper)
+        listView.adapter = adapter
+    }
+}

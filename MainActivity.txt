@@ -1,0 +1,410 @@
+class MainActivity : AppCompatActivity() {
+    private lateinit var dbHelper: ProductDatabaseHelper
+    private lateinit var listView: ListView
+    private lateinit var productNameInput: EditText
+    private lateinit var productExpirationInput: EditText
+    private lateinit var productQuantityInput: EditText
+    private lateinit var addProductButton: Button
+    private lateinit var categorySpinner: Spinner
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        // BottomNavigationView のセットアップ
+        val bottomNavigationView = findViewById<BottomNavigationView>(R.id.bottom_navigation)
+        bottomNavigationView.setOnNavigationItemSelectedListener { item ->
+            when (item.itemId) {
+                R.id.navigation_category -> {
+                    // CategoryActivity に遷移
+                    val intent = Intent(this, CategoryActivity::class.java)
+                    startActivity(intent)
+                    true
+                }
+                R.id.navigation_image_recognition -> {
+                    // 画像認識画面に遷移
+                    true
+                }
+                R.id.navigation_register -> {
+                    // 商品登録画面に遷移
+                    true
+                }
+                else -> false
+            }
+        }
+
+        // パーミッションリクエストの実行
+        requestNotificationPermission(this)
+        // WorkManagerの制約とスケジュールの設定
+        val constraints = Constraints.Builder()
+            .setRequiresBatteryNotLow(true) // バッテリーが低くない時に実行
+            .build()
+
+        val workRequest = PeriodicWorkRequestBuilder<ExpirationCheckWorker>(1, TimeUnit.DAYS)
+            .setConstraints(constraints)
+            .build()
+
+        WorkManager.getInstance(this).enqueue(workRequest)
+
+
+        // データベースヘルパーの初期化
+        dbHelper = ProductDatabaseHelper(this)
+        // Spinner設定の部分
+        categorySpinner = findViewById(R.id.categorySpinner)
+
+
+        // リストビューの初期化
+        listView = findViewById(R.id.listView)
+
+        // 商品名、消費期限、数量の入力フィールド
+        productNameInput = findViewById(R.id.productNameInput)
+        productExpirationInput = findViewById(R.id.productExpirationInput)
+        productQuantityInput = findViewById(R.id.productQuantityInput)
+
+        // 商品登録ボタン
+        addProductButton = findViewById(R.id.addProductButton)
+
+        // ボタンがクリックされたときの処理
+        addProductButton.setOnClickListener {
+            val selectedPosition = categorySpinner.selectedItemPosition
+            val categoryHelper = CategoryDatabaseHelper(this)
+            val categories = categoryHelper.getAllCategories()
+            Log.d("CategoryDebug", "Categories: $categories")  // ログ出力
+
+            // 位置が無効でないことを確認
+            if (selectedPosition != Spinner.INVALID_POSITION) {
+                val selectedCategory = categories[selectedPosition] // カテゴリーオブジェクトを取得
+                val categoryId = selectedCategory.id // IDを取得
+                addProduct(categoryId)
+            } else {
+                Toast.makeText(this, "カテゴリーを選択してください", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+
+        // カテゴリーをSpinnerにセットアップ
+        val categoryHelper = CategoryDatabaseHelper(this)
+        val categories = categoryHelper.getAllCategories()
+        if (categories.isEmpty()) {
+            Toast.makeText(this, "カテゴリーが存在しません", Toast.LENGTH_SHORT).show()
+        } else {
+            val categoryNames = categories.map { it.name }
+            val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, categoryNames)
+            categorySpinner.adapter = adapter
+        }
+
+        val categoryNames = categories.map { it.name }
+        Log.d("CategoryDebug", "Category Names: $categoryNames")  // ここでリスト内容を確認
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, categoryNames)
+        categorySpinner.adapter = adapter
+
+        // 商品リストを表示するためにリストを更新
+        refreshProductList()
+    }
+
+    private fun addProduct(categoryId: Int) {
+        val name = productNameInput.text.toString()
+        val expirationDateStr = productExpirationInput.text.toString()
+        val quantityStr = productQuantityInput.text.toString()
+
+        // 日付のパース
+        val expirationDate = LocalDate.parse(expirationDateStr)
+        val quantity = quantityStr.toIntOrNull()
+
+        if (quantity == null || quantity <= 0) {
+            Toast.makeText(this, "数量は1以上の整数を入力してください", Toast.LENGTH_SHORT).show()
+            return // 数量が無効な場合は処理を中断
+        }
+
+        // 商品をデータベースに追加
+        dbHelper.addProduct(name, expirationDate, quantity, categoryId)
+
+        // リストを更新
+        refreshProductList()
+
+        // 入力フィールドをクリア
+        productNameInput.text.clear()
+        productExpirationInput.text.clear()
+        productQuantityInput.text.clear()
+    }
+
+    private fun refreshProductList() {
+        val products = dbHelper.getAllProducts()  // カテゴリー関係なしで商品を取得
+        setupListView(products)
+    }
+
+    private fun setupListView(products: List<Product>) {
+        val adapter = ProductAdapter(this, products.toMutableList(), dbHelper)
+        listView.adapter = adapter
+    }
+}
+
+
+
+class ProductDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
+
+    companion object {
+        private const val DATABASE_NAME = "products.db"
+        private const val DATABASE_VERSION = 10 // バージョンを更新
+        private const val TABLE_PRODUCTS = "products"
+        private const val TABLE_CATEGORIES = "categories" // カテゴリーテーブル
+        private const val COLUMN_ID = "id"
+        private const val COLUMN_NAME = "name"
+        private const val COLUMN_EXPIRATION_DATE = "expirationDate"
+        private const val COLUMN_QUANTITY = "quantity"
+        private const val COLUMN_CATEGORY_ID = "categoryId" // 商品のカテゴリーID
+    }
+
+    override fun onCreate(db: SQLiteDatabase) {
+        // カテゴリーテーブルの作成
+        val createCategoriesTable = """
+            CREATE TABLE $TABLE_CATEGORIES (
+                $COLUMN_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                $COLUMN_NAME TEXT
+            )
+        """
+        db.execSQL(createCategoriesTable)
+
+        // 商品テーブルの作成
+        val createTable = """
+        CREATE TABLE $TABLE_PRODUCTS (
+            $COLUMN_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+            $COLUMN_NAME TEXT,
+            $COLUMN_EXPIRATION_DATE TEXT,
+            $COLUMN_QUANTITY INTEGER,
+            $COLUMN_CATEGORY_ID INTEGER,
+            FOREIGN KEY($COLUMN_CATEGORY_ID) REFERENCES $TABLE_CATEGORIES($COLUMN_ID)
+        )
+    """
+        db.execSQL(createTable)
+        insertInitialData(db)
+    }
+
+    private fun insertInitialData(db: SQLiteDatabase) {
+        val initialCategories = listOf("食料", "衣服", "飲み物") // 初期カテゴリーを追加
+        for (category in initialCategories) {
+            val values = ContentValues().apply {
+                put(COLUMN_NAME, category)
+            }
+            db.insert(TABLE_CATEGORIES, null, values)
+        }
+
+        val initialProducts = listOf(
+            Triple("食料", LocalDate.of(2024, 8, 30), 5),
+            Triple("衣服", LocalDate.of(2024, 9, 4), 3),
+            Triple("食料", LocalDate.of(2024, 9, 10), 7)
+        )
+
+        for (product in initialProducts) {
+            val values = ContentValues().apply {
+                put(COLUMN_NAME, product.first)
+                put(COLUMN_EXPIRATION_DATE, product.second.toString())
+                put(COLUMN_QUANTITY, product.third)
+            }
+            db.insert(TABLE_PRODUCTS, null, values)
+        }
+    }
+
+    //商品を削除するメソッド
+    fun deleteProduct(product: Product) {
+        val db = this.writableDatabase
+        db.delete(TABLE_PRODUCTS, "$COLUMN_ID=?", arrayOf(product.id.toString()))
+        db.close()
+    }
+
+    // 商品を追加するメソッド（カテゴリーIDも追加）
+    fun addProduct(name: String, expirationDate: LocalDate, quantity: Int, categoryId: Int) {
+        val db = this.writableDatabase
+        val values = ContentValues().apply {
+            put(COLUMN_NAME, name)
+            put(COLUMN_EXPIRATION_DATE, expirationDate.toString())
+            put(COLUMN_QUANTITY, quantity)
+            put(COLUMN_CATEGORY_ID, categoryId)
+        }
+        db.insert(TABLE_PRODUCTS, null, values)
+        db.close()
+    }
+
+
+
+    // 商品の一覧を取得
+    fun getAllProducts(): List<Product> {
+        val products = mutableListOf<Product>()
+        val db = this.readableDatabase
+        // 商品とカテゴリーをJOINして、カテゴリー名を取得
+        val query = """
+        SELECT p.$COLUMN_ID, p.$COLUMN_NAME, p.$COLUMN_EXPIRATION_DATE, p.$COLUMN_QUANTITY, p.$COLUMN_CATEGORY_ID, c.$COLUMN_NAME AS category_name
+        FROM $TABLE_PRODUCTS p
+        JOIN $TABLE_CATEGORIES c ON p.$COLUMN_CATEGORY_ID = c.$COLUMN_ID
+    """
+        val cursor = db.rawQuery(query, null)
+
+        if (cursor.moveToFirst()) {
+            do {
+                val id = cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_ID))
+                val name = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_NAME))
+                val expirationDate = LocalDate.parse(cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_EXPIRATION_DATE)))
+                val quantity = cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_QUANTITY))
+                val categoryId = cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_CATEGORY_ID))
+                val categoryName = cursor.getString(cursor.getColumnIndexOrThrow("category_name")) // JOINで取得したカテゴリー名
+
+                // 商品データを作成
+                products.add(Product(id, name, expirationDate, quantity, categoryId, categoryName))
+            } while (cursor.moveToNext())
+        }
+        cursor.close()
+        return products
+    }
+
+
+
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        db.execSQL("DROP TABLE IF EXISTS $TABLE_PRODUCTS")
+        db.execSQL("DROP TABLE IF EXISTS $TABLE_CATEGORIES")
+        onCreate(db)
+    }
+}
+
+// 商品のデータクラス
+data class Product(
+    val id: Int,
+    val name: String,
+    val expirationDate: LocalDate,
+    val quantity: Int,
+    val categoryId: Int,
+    val categoryName: String // カテゴリ名を追加
+)
+
+// カテゴリーのデータクラス
+data class Category(val id: Int, val name: String)
+
+class ExpirationCheckWorker(appContext: Context, workerParams: WorkerParameters) :
+    CoroutineWorker(appContext, workerParams) {
+
+    override suspend fun doWork(): Result {
+        val dbHelper = ProductDatabaseHelper(applicationContext)
+        val products = dbHelper.getAllProducts()
+        val currentDate = LocalDate.now()
+
+        // 消費期限が3日以内の商品の通知
+        for (product in products) {
+            val daysUntilExpiration = ChronoUnit.DAYS.between(currentDate, product.expirationDate)
+            if (daysUntilExpiration in 0..3) {
+                sendNotification(
+                    applicationContext,
+                    "消費期限が近づいています",
+                    "${product.name}の消費期限が${daysUntilExpiration}日後です"
+                )
+            }
+        }
+
+        return Result.success()
+    }
+}
+
+private fun sendNotification(context: Context, title: String, message: String) {
+    val channelId = "expiration_notifications"
+    val notificationId = 1
+
+    // NotificationChannelの作成
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val name = "Expiration Notifications"
+        val descriptionText = "Notifications for products nearing expiration"
+        val importance = NotificationManager.IMPORTANCE_DEFAULT
+        val channel = NotificationChannel(channelId, name, importance).apply {
+            description = descriptionText
+        }
+
+        // NotificationManagerの取得とチャンネルの登録
+        val notificationManager =
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        notificationManager?.createNotificationChannel(channel)
+    }
+
+    // 通知の表示前にパーミッションを確認
+    if (ActivityCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+    ) {
+        // 通知を表示
+        val builder = NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(R.drawable.ic_launcher_background)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+
+        NotificationManagerCompat.from(context).apply {
+            notify(notificationId, builder.build())
+        }
+    } else {
+        requestNotificationPermission(context)
+    }
+}
+
+private fun requestNotificationPermission(context: Context) {
+    if (context is MainActivity) {
+        val requestPermissionLauncher = context.registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { isGranted: Boolean ->
+            if (isGranted) {
+                sendNotification(context, "通知の設定", "アクセスの許可を確認しました")
+            }
+        }
+
+        // パーミッションリクエストの実行
+        requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+}
+
+class CategoryDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
+
+    // コンパニオンオブジェクト
+    companion object {
+        private const val DATABASE_NAME = "categories.db"
+        private const val DATABASE_VERSION = 1
+        private const val TABLE_CATEGORIES = "categories"
+        private const val COLUMN_ID = "id"
+        private const val COLUMN_NAME = "name"
+    }
+
+    override fun onCreate(db: SQLiteDatabase) {
+        val createTable = """ 
+            CREATE TABLE $TABLE_CATEGORIES (
+                $COLUMN_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                $COLUMN_NAME TEXT
+            )"""
+        db.execSQL(createTable)
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        db.execSQL("DROP TABLE IF EXISTS $TABLE_CATEGORIES")
+        onCreate(db)
+    }
+
+    fun addCategory(name: String) {
+        val db = this.writableDatabase
+        val values = ContentValues()
+        values.put(COLUMN_NAME, name)
+        db.insert(TABLE_CATEGORIES, null, values)
+        db.close()
+    }
+
+    // カテゴリを全て取得するメソッド
+    fun getAllCategories(): List<Category> {
+        val categories = mutableListOf<Category>()
+        val db = this.readableDatabase
+        val cursor = db.query(TABLE_CATEGORIES, arrayOf(COLUMN_ID, COLUMN_NAME), null, null, null, null, null)
+
+        if (cursor.moveToFirst()) {
+            do {
+                val id = cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_ID))
+                val name = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_NAME))
+                categories.add(Category(id, name))
+            } while (cursor.moveToNext())
+        }
+        cursor.close()
+        return categories
+    }
+}

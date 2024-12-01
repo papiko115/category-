@@ -1,0 +1,58 @@
+import android.content.Intent
+import android.os.Bundle
+import android.widget.ArrayAdapter
+import android.widget.Button
+import android.widget.EditText
+import android.widget.ListView
+import androidx.appcompat.app.AppCompatActivity
+
+class CategoryActivity : AppCompatActivity() {
+
+    private lateinit var categoryDbHelper: CategoryDatabaseHelper
+    private lateinit var categoryNameInput: EditText
+    private lateinit var categoryListView: ListView
+    private lateinit var addCategoryButton: Button
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_category)
+
+        // CategoryDatabaseHelper を初期化
+        categoryDbHelper = CategoryDatabaseHelper(this)
+
+        categoryNameInput = findViewById(R.id.categoryNameInput)
+        categoryListView = findViewById(R.id.categoryListView)
+        addCategoryButton = findViewById(R.id.addCategoryButton)
+
+        // カテゴリー一覧を取得して表示
+        val categories = categoryDbHelper.getAllCategories()
+        val categoryNames = categories.map { it.name } // カテゴリー名のリストを作成
+        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, categoryNames)
+        categoryListView.adapter = adapter
+
+        // カテゴリー追加ボタンのクリックリスナー
+        addCategoryButton.setOnClickListener {
+            val categoryName = categoryNameInput.text.toString()
+            if (categoryName.isNotBlank()) {
+                categoryDbHelper.addCategory(categoryName) // カテゴリーを追加
+                categoryNameInput.text.clear()
+
+                // カテゴリー一覧を更新
+                val updatedCategories = categoryDbHelper.getAllCategories()
+                val updatedCategoryNames = updatedCategories.map { it.name }
+                val updatedAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, updatedCategoryNames)
+                categoryListView.adapter = updatedAdapter
+            }
+        }
+
+        // カテゴリのタッチイベントを設定
+        categoryListView.setOnItemClickListener { _, _, position, _ ->
+            val selectedCategory = categories[position]
+            // 遷移先の画面にカテゴリIDを渡す
+            val intent = Intent(this, CategoryDetail::class.java)
+            intent.putExtra("CATEGORY_ID", selectedCategory.id)
+            startActivity(intent)
+        }
+
+    }
+}
